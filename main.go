@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
@@ -22,6 +24,10 @@ var (
 	collectionName  = flag.String("collection", "", "collection name to import data into. example: 'users'")
 	goroutinesLimit = flag.Int("goroutines", 100, "max number of simultaneously ran goroutines")
 	dataDir         = flag.String("dataDir", "./pb_data", "pocketbase data dir location")
+	validate        = flag.Bool("validate", true, "validate records with pocketbase before inserting")
+	printDelay      = flag.Duration("printDelay", time.Second, "duration before updating prints")
+	processed       uint64
+	startTime       time.Time
 )
 
 func main() {
@@ -67,27 +73,78 @@ func run(ctx context.Context) error {
 		}
 	}()
 
+	return PocketbaseWriter(ctx, headers, csvRecordsChan, pb, collection)
+}
+
+func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan []string, pb *pocketbase.PocketBase, col *core.Collection) error {
+	startTime = time.Now()
+
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(*goroutinesLimit)
 
-	for recordCSV := range csvRecordsChan {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(*printDelay)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				count := atomic.LoadUint64(&processed)
+				elapsed := time.Since(startTime).Seconds()
+				var rps float64
+				if elapsed > 0 {
+					rps = float64(count) / elapsed
+				}
+				fmt.Printf("\rProcessed: %d rows | %.1f rows/sec", count, rps)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	defer close(done)
+
+	for recordCSV := range values {
 		recordCSVCopy := recordCSV
 		g.Go(func() error {
-			record := core.NewRecord(collection)
-			for i, header := range headers {
-				if i > len(recordCSVCopy) {
+			record := core.NewRecord(col)
+			for i, header := range columnNames {
+				if i >= len(recordCSVCopy) {
 					break
 				}
 				record.Set(header, recordCSVCopy[i])
 			}
-			if err := pb.Save(record); err != nil {
-				return err
+			var err error
+			if *validate {
+				err = pb.SaveWithContext(ctx, record)
+			} else {
+				err = pb.SaveNoValidateWithContext(ctx, record)
 			}
+			if err != nil {
+				if !strings.HasSuffix(err.Error(), "Value must be unique.") {
+					return err
+				}
+			}
+			atomic.AddUint64(&processed, 1)
 			return nil
 		})
 	}
 
-	return g.Wait()
+	if err := g.Wait(); err != nil {
+		fmt.Printf("\rProcessed: %d rows (failed)\n", atomic.LoadUint64(&processed))
+		return err
+	}
+
+	count := atomic.LoadUint64(&processed)
+	elapsed := time.Since(startTime).Seconds()
+	var rps float64
+	if elapsed > 0 {
+		rps = float64(count) / elapsed
+	}
+	fmt.Printf("\rProcessed: %d rows | %.1f rows/sec (finished)\n", count, rps)
+	fmt.Println("Import completed successfully.")
+	return nil
 }
 
 func StartCSVReader(ctx context.Context, r io.Reader) (recordsChan <-chan []string, errChan <-chan error, headers []string) {
@@ -110,7 +167,7 @@ func StartCSVReader(ctx context.Context, r io.Reader) (recordsChan <-chan []stri
 				record, err := csvReader.Read()
 				if err != nil {
 					if err != io.EOF {
-						safeSend(ctx, errs, err)
+						safeSend(ctx, errs, fmt.Errorf("csv read error at row %d: %w", err))
 					}
 
 					return
