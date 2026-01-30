@@ -38,3 +38,46 @@ Available for:
 ```bash
 go install github.com/jim-ww/pocketbase-importer@latest
 ```
+
+## Usage
+```bash
+pocketbase-importer \
+  -dataDir ./pb_data \
+  -collection users \
+  -i users.csv \
+  [flags]
+```
+
+### Required flags
+- `-dataDir`       PocketBase data directory (default: `./pb_data`)
+- `-collection`    Target collection name or ID
+- `-i`             Input CSV file path
+
+### Important optional flags
+
+| Flag          | Default | Description                                                  |
+|---------------|---------|--------------------------------------------------------------|
+| `-goroutines` | 100     | Max concurrent insert operations                             |
+| `-validate`   | true    | Run PocketBase validation rules before saving                |
+| `-delimiter`  | ,       | CSV field delimiter (e.g. `;` `|` `\t`)                      |
+| `-printDelay` | 1s      | How often to refresh the progress line                       |
+
+### Example – large file
+
+```bash
+pocketbase-importer -dataDir ./pb_data/ -collection customers -i customers-export.csv -goroutines=250 -validate=false -printDelay=2s
+```
+
+### Example output:
+```text
+Processed: 53482 rows | 7473.2 rows/sec (finished)
+Import completed successfully.
+```
+
+## Important Notes
+
+- CSV **must** contain a header row
+- Header names must match PocketBase field names (case-sensitive)
+- Empty values are passed as-is → PocketBase applies defaults and auto-generates IDs when configured
+- "Value must be unique" errors are silently skipped
+- Very wide rows or extremely long values may increase memory usage
