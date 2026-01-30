@@ -24,6 +24,7 @@ var (
 	dataDir         = flag.String("dataDir", "./pb_data", "pocketbase data dir location")
 	validate        = flag.Bool("validate", true, "validate records with pocketbase before inserting")
 	printDelay      = flag.Duration("printDelay", time.Second, "duration before updating prints")
+	delimiter       = flag.String("delimiter", ",", "csv field delimiter")
 	processed       uint64
 	startTime       time.Time
 )
@@ -148,6 +149,12 @@ func StartCSVReader(ctx context.Context, r io.Reader) (recordsChan <-chan []stri
 	records := make(chan []string)
 	errs := make(chan error)
 	csvReader := csv.NewReader(r)
+
+	delimiterRune := []rune(*delimiter)
+	if len(delimiterRune) != 1 {
+		log.Fatal("invalid field delimiter, must be 1 character:", *delimiter)
+	}
+	csvReader.Comma = delimiterRune[0]
 
 	headers, err := csvReader.Read()
 	if err != nil {
