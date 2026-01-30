@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -45,8 +43,7 @@ func run(ctx context.Context) error {
 	defer file.Close()
 
 	if *collectionName == "" {
-		*collectionName = strings.Split(filepath.Base(*inputFile), ".")[0] // TODO handle names without '.'
-		slog.Warn("Collection name not set explicitely, setting to filename", "filename", *collectionName)
+		log.Fatal("Collection name not set. Set it via -collection flag")
 	}
 
 	pb := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: *dataDir})
