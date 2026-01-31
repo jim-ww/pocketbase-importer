@@ -32,34 +32,35 @@ var (
 
 func main() {
 	flag.Parse()
-	if err := run(context.Background()); err != nil {
+
+	pb := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: *dataDir})
+
+	if err := pb.Bootstrap(); err != nil {
+		log.Fatal(fmt.Errorf("failed to bootstrap pocketbase: %w", err))
+	}
+
+	if err := ImportFromCSVFile(context.Background(), pb, *collectionName, *inputFile, *delimiter, *goroutinesLimit, *validate, *printDelay); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context) error {
-	file, err := os.Open(*inputFile)
+func ImportFromCSVFile(ctx context.Context, pb *pocketbase.PocketBase, collectionName, filePath, delimiter string, goroutinesLimit int, validate bool, printDelay time.Duration) error {
+	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	if *collectionName == "" {
-		log.Fatal("Collection name not set. Set it via -collection flag")
+	if collectionName == "" {
+		return fmt.Errorf("collectionName cannot be empty")
 	}
 
-	pb := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: *dataDir})
-
-	if err := pb.Bootstrap(); err != nil {
-		return fmt.Errorf("failed to bootstrap pocketbase: %w", err)
-	}
-
-	collection, err := pb.FindCollectionByNameOrId(*collectionName)
+	collection, err := pb.FindCollectionByNameOrId(collectionName)
 	if err != nil {
 		return fmt.Errorf("failed to find collection by name/id: %w", err)
 	}
 
-	csvRecordsChan, readerErrChan, headers := StartCSVReader(ctx, file)
+	csvRecordsChan, readerErrChan, headers := StartCSVReader(ctx, file, delimiter)
 
 	go func() {
 		select {
@@ -72,18 +73,18 @@ func run(ctx context.Context) error {
 		}
 	}()
 
-	return PocketbaseWriter(ctx, headers, csvRecordsChan, pb, collection)
+	return PocketbaseWriter(ctx, headers, csvRecordsChan, pb, collection, goroutinesLimit, validate, printDelay)
 }
 
-func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan []string, pb *pocketbase.PocketBase, col *core.Collection) error {
+func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan []string, pb *pocketbase.PocketBase, col *core.Collection, goroutinesLimit int, validate bool, printDelay time.Duration) error {
 	startTime = time.Now()
 
 	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(*goroutinesLimit)
+	g.SetLimit(goroutinesLimit)
 
 	done := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(*printDelay)
+		ticker := time.NewTicker(printDelay)
 		defer ticker.Stop()
 		for {
 			select {
@@ -115,7 +116,7 @@ func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan [
 				record.Set(header, recordCSVCopy[i])
 			}
 			var err error
-			if *validate {
+			if validate {
 				err = pb.SaveWithContext(ctx, record)
 			} else {
 				err = pb.SaveNoValidateWithContext(ctx, record)
@@ -146,12 +147,12 @@ func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan [
 	return nil
 }
 
-func StartCSVReader(ctx context.Context, r io.Reader) (recordsChan <-chan []string, errChan <-chan error, headers []string) {
+func StartCSVReader(ctx context.Context, r io.Reader, delimiter string) (recordsChan <-chan []string, errChan <-chan error, headers []string) {
 	records := make(chan []string)
 	errs := make(chan error)
 	csvReader := csv.NewReader(r)
 
-	s, err := strconv.Unquote(`"` + *delimiter + `"`)
+	s, err := strconv.Unquote(`"` + delimiter + `"`)
 	if err != nil {
 		log.Fatal("invalid delimiter:", err)
 	}
