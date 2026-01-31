@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -150,13 +151,21 @@ func StartCSVReader(ctx context.Context, r io.Reader) (recordsChan <-chan []stri
 	errs := make(chan error)
 	csvReader := csv.NewReader(r)
 
-	delimiterRune := []rune(*delimiter)
-	if len(delimiterRune) != 1 {
-		log.Fatal("invalid field delimiter, must be 1 character:", *delimiter)
+	s, err := strconv.Unquote(`"` + *delimiter + `"`)
+	if err != nil {
+		log.Fatal("invalid delimiter:", err)
 	}
-	csvReader.Comma = delimiterRune[0]
 
-	headers, err := csvReader.Read()
+	delimRune := []rune(s)
+	if len(delimRune) != 1 {
+		log.Fatal("delimiter must be exactly one character")
+	}
+	if delimRune[0] != ',' {
+		fmt.Printf("Using delimiter: 0x%X\n", delimRune[0])
+	}
+	csvReader.Comma = delimRune[0]
+
+	headers, err = csvReader.Read()
 	if err != nil {
 		log.Fatal("Input file must contain csv headers:", err)
 	}
@@ -171,7 +180,7 @@ func StartCSVReader(ctx context.Context, r io.Reader) (recordsChan <-chan []stri
 				record, err := csvReader.Read()
 				if err != nil {
 					if err != io.EOF {
-						safeSend(ctx, errs, fmt.Errorf("csv read error at row %d: %w", err))
+						safeSend(ctx, errs, fmt.Errorf("csv read error at row: %w", err))
 					}
 
 					return
