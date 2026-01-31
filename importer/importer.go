@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -22,7 +23,7 @@ var (
 	startTime time.Time
 )
 
-func ImportFromCSVFile(ctx context.Context, pb *pocketbase.PocketBase, collectionName, filePath, delimiter string, goroutinesLimit int, validate bool, printDelay time.Duration) error {
+func ImportFromCSVFile(ctx context.Context, pb *pocketbase.PocketBase, collectionName, filePath, delimiter string, goroutinesLimit int, validate, printWithLogger bool, printDelay time.Duration) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
@@ -38,7 +39,7 @@ func ImportFromCSVFile(ctx context.Context, pb *pocketbase.PocketBase, collectio
 		return fmt.Errorf("failed to find collection by name/id: %w", err)
 	}
 
-	csvRecordsChan, readerErrChan, headers := StartCSVReader(ctx, file, delimiter)
+	csvRecordsChan, readerErrChan, headers := StartCSVReader(ctx, file, delimiter, printWithLogger, pb.Logger())
 
 	go func() {
 		select {
@@ -51,10 +52,10 @@ func ImportFromCSVFile(ctx context.Context, pb *pocketbase.PocketBase, collectio
 		}
 	}()
 
-	return PocketbaseWriter(ctx, headers, csvRecordsChan, pb, collection, goroutinesLimit, validate, printDelay)
+	return PocketbaseWriter(ctx, headers, csvRecordsChan, pb, collection, goroutinesLimit, validate, printWithLogger, printDelay)
 }
 
-func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan []string, pb *pocketbase.PocketBase, col *core.Collection, goroutinesLimit int, validate bool, printDelay time.Duration) error {
+func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan []string, pb *pocketbase.PocketBase, col *core.Collection, goroutinesLimit int, validate, printWithLogger bool, printDelay time.Duration) error {
 	startTime = time.Now()
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -75,7 +76,11 @@ func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan [
 				if elapsed > 0 {
 					rps = float64(count) / elapsed
 				}
-				fmt.Printf("\rProcessed: %d rows | %.1f rows/sec", count, rps)
+				if printWithLogger {
+					pb.Logger().Debug("Processed rows", "count", count, "rows/sec", rps)
+				} else {
+					fmt.Printf("\rProcessed: %d rows | %.1f rows/sec", count, rps)
+				}
 			case <-ctx.Done():
 				return
 			}
@@ -110,7 +115,12 @@ func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan [
 	}
 
 	if err := g.Wait(); err != nil {
-		fmt.Printf("\rProcessed: %d rows (failed)\n", atomic.LoadUint64(&processed))
+		if printWithLogger {
+			pb.Logger().Error("Processed rows (failed)", "count", atomic.LoadUint64(&processed), "error", err)
+		} else {
+			fmt.Printf("\rProcessed: %d rows (failed)\n", atomic.LoadUint64(&processed))
+		}
+
 		return err
 	}
 
@@ -120,12 +130,18 @@ func PocketbaseWriter(ctx context.Context, columnNames []string, values <-chan [
 	if elapsed > 0 {
 		rps = float64(count) / elapsed
 	}
-	fmt.Printf("\rProcessed: %d rows | %.1f rows/sec (finished)\n", count, rps)
-	fmt.Println("Import completed successfully.")
+
+	if printWithLogger {
+		pb.Logger().Info("Processed rows (finished)", "count", count, "rows/sec", rps)
+		pb.Logger().Info("Import completed successfully.")
+	} else {
+		fmt.Printf("\rProcessed: %d rows | %.1f rows/sec (finished)\n", count, rps)
+		fmt.Println("Import completed successfully.")
+	}
 	return nil
 }
 
-func StartCSVReader(ctx context.Context, r io.Reader, delimiter string) (recordsChan <-chan []string, errChan <-chan error, headers []string) {
+func StartCSVReader(ctx context.Context, r io.Reader, delimiter string, printWithLogger bool, logger *slog.Logger) (recordsChan <-chan []string, errChan <-chan error, headers []string) {
 	records := make(chan []string)
 	errs := make(chan error)
 	csvReader := csv.NewReader(r)
@@ -140,7 +156,11 @@ func StartCSVReader(ctx context.Context, r io.Reader, delimiter string) (records
 		log.Fatal("delimiter must be exactly one character")
 	}
 	if delimRune[0] != ',' {
-		fmt.Printf("Using delimiter: 0x%X\n", delimRune[0])
+		if printWithLogger {
+			logger.Info("Using delimiter", "delimiter", fmt.Sprintf("0x%X", delimRune[0]))
+		} else {
+			fmt.Printf("Using delimiter: 0x%X\n", delimRune[0])
+		}
 	}
 	csvReader.Comma = delimRune[0]
 

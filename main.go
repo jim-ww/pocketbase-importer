@@ -18,6 +18,7 @@ var (
 	dataDir         = flag.String("dataDir", "./pb_data", "pocketbase data dir location")
 	validate        = flag.Bool("validate", true, "validate records with pocketbase before inserting")
 	printDelay      = flag.Duration("printDelay", time.Second, "duration before updating prints")
+	printWithLogger = flag.Bool("logger", false, "print messages with pocketbase logger")
 	delimiter       = flag.String("delimiter", ",", "csv field delimiter")
 )
 
@@ -30,7 +31,7 @@ func main() {
 		log.Fatal(fmt.Errorf("failed to bootstrap pocketbase: %w", err))
 	}
 
-	if err := importer.ImportFromCSVFile(context.Background(), pb, *collectionName, *inputFile, *delimiter, *goroutinesLimit, *validate, *printDelay); err != nil {
+	if err := importer.ImportFromCSVFile(context.Background(), pb, *collectionName, *inputFile, *delimiter, *goroutinesLimit, *validate, *printWithLogger, *printDelay); err != nil {
 		log.Fatal(err)
 	}
 }
